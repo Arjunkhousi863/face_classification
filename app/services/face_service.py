@@ -5,14 +5,21 @@ import os
 import threading
 from typing import Optional
 
+# Keep CPU math libraries from spawning many threads (saves RAM on Render free).
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+os.environ.setdefault("ORT_NUM_THREADS", "1")
+
 import cv2
 import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# buffalo_s is lighter for Render free tier; buffalo_l is more accurate if you have more RAM
-FACE_MODEL_NAME = os.getenv("FACE_MODEL_NAME", "buffalo_s")
-DET_SIZE = int(os.getenv("FACE_DET_SIZE", "320"))
+# buffalo_sc is the smallest InsightFace pack; still may need >512MB on free Render.
+FACE_MODEL_NAME = os.getenv("FACE_MODEL_NAME", "buffalo_sc")
+DET_SIZE = int(os.getenv("FACE_DET_SIZE", "256"))
 
 _app = None
 _model_error: Optional[str] = None
@@ -20,7 +27,7 @@ _lock = threading.Lock()
 
 
 def get_face_app():
-    """Lazy-load InsightFace FaceAnalysis (ArcFace embeddings, 512-d)."""
+    """Lazy-load InsightFace with only detection + recognition modules."""
     global _app, _model_error
     if _app is not None:
         return _app
@@ -35,8 +42,12 @@ def get_face_app():
         try:
             from insightface.app import FaceAnalysis
 
-            logger.info("Loading InsightFace model: %s", FACE_MODEL_NAME)
-            app = FaceAnalysis(name=FACE_MODEL_NAME, providers=["CPUExecutionProvider"])
+            logger.info("Loading InsightFace model: %s (detection+recognition only)", FACE_MODEL_NAME)
+            app = FaceAnalysis(
+                name=FACE_MODEL_NAME,
+                allowed_modules=["detection", "recognition"],
+                providers=["CPUExecutionProvider"],
+            )
             app.prepare(ctx_id=-1, det_size=(DET_SIZE, DET_SIZE))
             _app = app
             logger.info("InsightFace model loaded")
@@ -48,12 +59,10 @@ def get_face_app():
 
 
 def is_model_ready() -> bool:
-    """True only if model is already loaded (does not trigger download)."""
     return _app is not None
 
 
 def warmup_model() -> None:
-    """Load model in background so first user request is faster."""
     def _run():
         try:
             get_face_app()
@@ -68,6 +77,12 @@ def decode_image(file_bytes: bytes) -> np.ndarray:
     image = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if image is None:
         raise ValueError("Invalid image file")
+    # Downscale huge images to reduce RAM during inference
+    h, w = image.shape[:2]
+    max_side = int(os.getenv("FACE_MAX_IMAGE_SIDE", "640"))
+    scale = min(1.0, max_side / max(h, w))
+    if scale < 1.0:
+        image = cv2.resize(image, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
     return image
 
 
