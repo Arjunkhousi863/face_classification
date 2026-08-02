@@ -8,6 +8,7 @@ from app.config import get_settings
 from app.database.session import SessionLocal, init_db
 from app.models.user import User
 from app.routers import attendance, auth, health, search, users
+from app.services.face_service import warmup_model
 from app.utils.security import hash_password
 
 logging.basicConfig(level=logging.INFO)
@@ -39,6 +40,7 @@ def seed_admin() -> None:
 async def lifespan(_: FastAPI):
     init_db()
     seed_admin()
+    warmup_model()
     yield
 
 
